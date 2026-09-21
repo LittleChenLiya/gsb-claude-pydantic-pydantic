@@ -494,3 +494,82 @@ args, kwargs = val.validate_json('{"args": ["arg1"], "kwargs": {"extra": 1}}')
 print(args, kwargs)
 #> ('arg1',) {'extra': 1}
 ```
+
+## Discriminated union schema migration
+
+When evolving a model schema (for example between two versions of an API payload), old data often needs to be
+converted into the new models: fields were renamed, and discriminator values changed. The experimental
+[UnionMigrator][pydantic.experimental.union_migration.UnionMigrator] utility performs this migration
+recursively, including nested models, lists, dictionaries and Optional/union branches:
+
+```python
+from typing import Annotated, Literal
+
+from pydantic import BaseModel, Field
+from pydantic.experimental.union_migration import UnionMigrator
+
+
+class CatV2(BaseModel):
+    kind: Literal['cat']
+    name: str
+
+
+class DogV2(BaseModel):
+    kind: Literal['dog']
+    name: str
+
+
+class OwnerV2(BaseModel):
+    pets: list[Annotated[CatV2 | DogV2, Field(discriminator='kind')]]
+
+
+migrator = UnionMigrator(
+    discriminator='kind',  # (1)!
+    mapping={'cat_v1': CatV2, 'dog_v1': DogV2},  # (2)!
+    aliases={'pet_kind': 'kind', 'pet_name': 'name'},  # (3)!
+)
+
+old_data = {
+    'pets': [
+        {'pet_kind': 'cat_v1', 'pet_name': 'tom'},
+        {'pet_kind': 'dog_v1', 'pet_name': 'rex'},
+    ]
+}
+owner = migrator.migrate(OwnerV2, old_data)
+print(owner.pets[0])
+#> kind='cat' name='tom'
+```
+
+1. The name of the discriminator field on the *new* models.
+2. Maps each *old* discriminator value to the *new* model class. The discriminator value is rewritten to the
+   Literal tag of the target model.
+3. Maps *old* field names to *new* field names. Aliases apply at every nesting level of the migrated data.
+
+### Failure modes
+
+The migrator never silently picks a branch. The following conditions raise a structured
+[ValidationError][pydantic.ValidationError] with a dedicated error type:
+
+* unknown_discriminator: the old data contains a discriminator value (or none) that is not present in
+  the mapping. The error loc points at the discriminator key within the nested data.
+* duplicate_mapping: the configuration is ambiguous — two old discriminator values mapping to the same model,
+  two old aliases mapping to the same new field, or an alias shadowing the discriminator field name.
+* invalid_mapping: a mapping value that is not a Pydantic model class.
+* circular_reference: the input data contains a circular reference (e.g. a dictionary containing itself).
+
+### Serialization and JSON Schema
+
+Migration produces standard model instances, so serialization keeps the new models' aliases and field definition
+order, and [model_json_schema()][pydantic.main.BaseModel.model_json_schema] output stays consistent with
+runtime validation. [UnionMigrator.json_schema()][pydantic.experimental.union_migration.UnionMigrator.json_schema]
+is provided as a convenience wrapper.
+
+### Limitations
+
+* Aliases are global: an old field name is renamed the same way at every nesting level.
+* Only unions annotated with [Field(discriminator=...)][pydantic.Field] are remapped; plain (non-discriminated)
+  unions are passed through to standard validation.
+* Extra keys in the old data are carried over unchanged, so the new model's
+  [extra][pydantic.ConfigDict.extra] configuration decides whether they are kept or rejected.
+* Migration plans are cached per (model, migrator configuration) pair in a thread-safe manner; separate
+  UnionMigrator instances never share cached plans.

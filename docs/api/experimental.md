@@ -13,3 +13,10 @@
     options:
         members:
             - generate_arguments_schema
+
+## Union migration API
+
+::: pydantic.experimental.union_migration
+    options:
+        members:
+            - UnionMigrator
