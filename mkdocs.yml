@@ -118,6 +118,7 @@ nav:
       - Settings Management: concepts/pydantic_settings.md
       - Performance: concepts/performance.md
       - Experimental: concepts/experimental.md
+      - Schema Migration: concepts/schema_migration.md
   - API Documentation:
       - Pydantic:
           - BaseModel: api/base_model.md
