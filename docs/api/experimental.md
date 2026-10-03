@@ -13,3 +13,13 @@
     options:
         members:
             - generate_arguments_schema
+
+## Static discriminator API
+
+::: pydantic.experimental.static_discriminator
+    options:
+        members:
+            - StaticDiscriminatorInterpreter
+            - DiscriminatorReport
+            - DiscriminatorStatus
+            - inspect_discriminator
