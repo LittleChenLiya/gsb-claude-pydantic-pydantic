@@ -13,3 +13,16 @@
     options:
         members:
             - generate_arguments_schema
+
+## Serialization audit API
+
+::: pydantic.experimental.serialization_audit
+    options:
+        members:
+            - audit_model
+            - Sensitivity
+            - FieldAuditContext
+            - AdapterVerdict
+            - SerializerAuditAdapter
+            - FieldAuditEntry
+            - SerializationAuditReport

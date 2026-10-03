@@ -494,3 +494,110 @@ args, kwargs = val.validate_json('{"args": ["arg1"], "kwargs": {"extra": 1}}')
 print(args, kwargs)
 #> ('arg1',) {'extra': 1}
 ```
+
+## Serialization audit API
+
+Pydantic v2.14 introduced an experimental, read-only **serialization exposure
+auditor** in `pydantic.experimental.serialization_audit`. A model's `repr()`
+is not a reliable guide to what a model exports — `repr=False` only hides a
+field from the human-readable representation, it never removes the field from
+`model_dump()` output. The auditor answers "which fields would be exported,
+under which keys, and with which sensitivity?" **statically**: it reads only
+the model field definitions and the compiled core schema, never creates a
+model instance, and never executes user code.
+
+??? api "API Documentation"
+    [`pydantic.experimental.serialization_audit`][pydantic.experimental.serialization_audit]<br>
+
+For every field the report includes:
+
+* the **serialization alias** actually used as the export key,
+* **exclusion** via `exclude=True`,
+* the **inheritance source** (which class in the MRO defined the field),
+* **explicit sensitive types** such as `SecretStr`, which pydantic masks by
+  default at dump time,
+* `repr` visibility, reported for information only — `repr=False` is *never*
+  treated as a serialization exclusion.
+
+Custom serializers (`@field_serializer`, `PlainSerializer`/`WrapSerializer`)
+and `@computed_field` properties are opaque: they are marked
+`Sensitivity.UNKNOWN` and are only expanded when an explicit
+`SerializerAuditAdapter` declares their output. Adapter consultations are
+counted in the report's `callback_counts`. Recursive models are expanded
+along a per-path stack: expansion stops at the reference that would re-enter
+a model already on the current path, while the same nested model reached via
+two different paths is expanded on both paths.
+
+```python
+from typing import Optional
+
+from pydantic import BaseModel, Field, SecretStr, computed_field
+from pydantic.experimental.serialization_audit import audit_model
+
+
+class Base(BaseModel):
+    id: int
+
+
+class Address(BaseModel):
+    city: str
+
+
+class User(Base):
+    name: str = Field(serialization_alias='userName')
+    password: SecretStr = Field(repr=False)
+    token: str = Field(exclude=True)
+    home: Optional[Address] = None
+    manager: Optional['User'] = None
+
+    @computed_field
+    @property
+    def label(self) -> str:
+        return f'user-{self.id}'
+
+
+User.model_rebuild()
+print(audit_model(User).render_text())
+```
+
+The static report contains metadata only — no field values ever appear in it:
+
+```text
+Serialization audit report for __main__.User
+Guarantees: static read-only audit; no model instance created; no user serializer or computed field executed; no field values inspected.
+fields:
+  - id: int -> export key 'id' [sensitivity=plain] (defined in __main__.Base)
+  - name: str -> export key 'userName' (serialization alias of 'name') [sensitivity=plain] (defined in __main__.User)
+  - password: SecretStr -> export key 'password' [sensitivity=secret, repr=False (still exported)] (defined in __main__.User)
+      note: pydantic secret type; masked by default at dump time
+  - token: str -> export key 'token' [sensitivity=plain, excluded] (defined in __main__.User)
+  - home: Union[Address, NoneType] -> export key 'home' [sensitivity=plain] (defined in __main__.User)
+    - home.city: str -> export key 'city' [sensitivity=plain] (defined in __main__.Address)
+  - manager: Union[User, NoneType] -> export key 'manager' [sensitivity=plain] (defined in __main__.User)
+    - manager.<User>: User -> export key '' [sensitivity=plain, recursive-ref] (defined in __main__.User)
+        note: recursion stopped: User already appears on this path
+  - label: str -> export key 'label' [sensitivity=unknown, computed] (defined in __main__.User)
+      note: computed field; not executed, output shape unknown
+note: repr=False only hides a field from repr(); it never excludes it from serialization.
+note: No user code was executed and no model instance was created during this audit.
+```
+
+To expand an opaque field, register an adapter that statically declares its
+output instead of running it:
+
+```python
+from pydantic.experimental.serialization_audit import AdapterVerdict, audit_model
+
+
+class TokenAdapter:
+    name = 'token-adapter'
+
+    def audit(self, context):
+        if context.kind == 'field_serializer' and context.field_name == 'token':
+            return AdapterVerdict(annotation=str, note='declared: hashes the token')
+        return None  # decline: the field stays Sensitivity.UNKNOWN
+
+
+report = audit_model(User, adapters=[TokenAdapter()])
+assert report.callback_counts == {'token-adapter': ...}  # every consultation is counted
+```
